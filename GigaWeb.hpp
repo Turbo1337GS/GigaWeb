@@ -1,5 +1,5 @@
 
-
+#include <unordered_set>
 #include <iostream>
 #include <stdio.h>
 #include <vector>
@@ -10,7 +10,8 @@
 #include <stack>
 #include <unordered_map>
 #include <map>
-#include <unordered_set>
+#include <string_view>
+#include "knownEntities.hpp"
 
 class GigaWeb
 {
@@ -86,13 +87,6 @@ public:
         output = std::regex_replace(output, multiNewlinePattern, "\n");
 
         return output;
-    }
-
-    bool containsOtherTags(const std::string &text, const std::string &currentTag)
-    {
-        static std::regex re;
-        re.assign(R"(<(?!/)" + currentTag + R"(\s|>)[^>]*>)");
-        return std::regex_search(text, re);
     }
 
     std::string cleanHTML(std::string &html)
@@ -222,11 +216,8 @@ public:
         return result;
     }
 
-    std::string removeHtmlEntities(const std::string &html)
+    std::string encodeHtmlEntities(const std::string &html)
     {
-        static const std::unordered_map<std::string, std::string> knownEntities = {
-            {"&quot;", ""}, {"&lt;", ""}, {"&gt;", ""}, {"&amp;", ""}, {"&apos;", ""}, {"&nbsp;", ""}, {"&excl;", ""}, {"&num;", ""}, {"&dollar;", ""}, {"&percnt;", ""}, {"&cent;", ""}, {"&copy;", ""}, {"&curren;", ""}, {"&euro;", ""}, {"&frac12;", ""}, {"&frac14;", ""}, {"&frac34;", ""}, {"&laquo;", ""}, {"&ldquo;", ""}, {"&li;", ""}, {"&mdash;", ""}, {"&middot;", ""}, {"&ndash;", ""}, {"&not;", ""}, {"&ordf;", ""}, {"&ordm;", ""}, {"&para;", ""}, {"&plusmn;", ""}, {"&pound;", ""}, {"&prime;", ""}, {"&raquo;", ""}, {"&reg;", ""}, {"&sect;", ""}, {"&shy;", ""}, {"&sup1;", ""}, {"&sup2;", ""}, {"&sup3;", ""}, {"&times;", ""}, {"&trade;", ""}, {"&uarr;", ""}, {"&uml;", ""}, {"&yen;", ""}};
-
         std::string cleanedHtml;
         cleanedHtml.reserve(html.size());
 
@@ -239,7 +230,35 @@ public:
         for (std::sregex_iterator i = htmlEntitiesIterator; i != htmlEntitiesEnd; ++i)
         {
             std::smatch match = *i;
-            if (knownEntities.find(match.str()) != knownEntities.end())
+            auto it = knownEntities.find(match.str());
+            if (it != knownEntities.end())
+            {
+                cleanedHtml.append(searchStart, html.begin() + match.position());
+                cleanedHtml.append(it->second);
+                searchStart = html.begin() + match.position() + match.length();
+            }
+        }
+
+        cleanedHtml.append(searchStart, html.end());
+
+        return cleanedHtml;
+    }
+    std::string removeHtmlEntities(const std::string &html)
+    {
+        std::string cleanedHtml;
+        cleanedHtml.reserve(html.size());
+
+        std::regex htmlEntitiesPattern(R"(&\w+;)");
+        std::sregex_iterator htmlEntitiesIterator(html.begin(), html.end(), htmlEntitiesPattern);
+        std::sregex_iterator htmlEntitiesEnd;
+
+        std::string::const_iterator searchStart = html.begin();
+
+        for (std::sregex_iterator i = htmlEntitiesIterator; i != htmlEntitiesEnd; ++i)
+        {
+            std::smatch match = *i;
+            auto it = knownEntities.find(match.str());
+            if (it != knownEntities.end())
             {
                 cleanedHtml.append(searchStart, html.begin() + match.position());
                 searchStart = html.begin() + match.position() + match.length();
@@ -247,6 +266,7 @@ public:
         }
 
         cleanedHtml.append(searchStart, html.end());
+
         return cleanedHtml;
     }
 
@@ -361,30 +381,6 @@ public:
         return true;
     }
 
-    std::string removeTag(const std::string &html, const std::string &tag)
-    {
-        std::string removedHtml = html;
-        std::string openingTag = "<" + tag;
-        std::string closingTag = "</" + tag + ">";
-
-        size_t pos = removedHtml.find(openingTag);
-        while (pos != std::string::npos)
-        {
-            size_t endPos = removedHtml.find(">", pos + openingTag.length());
-            if (endPos == std::string::npos)
-                break;
-
-            size_t closingTagPos = removedHtml.find(closingTag, endPos);
-            if (closingTagPos != std::string::npos)
-            {
-                removedHtml.erase(pos, closingTagPos - pos + closingTag.length());
-            }
-
-            pos = removedHtml.find(openingTag, pos);
-        }
-
-        return removedHtml;
-    }
     std::string replaceAllTags(const std::string &html, const std::string &oldTag, const std::string &newTag)
     {
         std::string replacedHtml = html;
@@ -455,27 +451,28 @@ public:
         std::string newTag = "<" + tag + ">" + content + "</" + tag + ">";
         html += newTag;
     }
-
     std::string removeAllTags(const std::string &html, const std::string &tag)
     {
         std::string removedHtml = html;
         std::string openingTag = "<" + tag;
         std::string closingTag = "</" + tag + ">";
 
-        size_t pos = removedHtml.find(openingTag);
-        while (pos != std::string::npos)
+        size_t pos = 0;
+        while ((pos = removedHtml.find(openingTag, pos)) != std::string::npos)
         {
             size_t endPos = removedHtml.find(">", pos + openingTag.length());
             if (endPos == std::string::npos)
-                break;
-
-            size_t closingTagPos = removedHtml.find(closingTag, endPos);
-            if (closingTagPos != std::string::npos)
             {
-                removedHtml.erase(pos, closingTagPos - pos + closingTag.length());
+                break;
             }
 
-            pos = removedHtml.find(openingTag, pos);
+            size_t closingTagPos = removedHtml.find(closingTag, endPos);
+            if (closingTagPos == std::string::npos)
+            {
+                break;
+            }
+
+            removedHtml.erase(pos, closingTagPos - pos + closingTag.length());
         }
 
         return removedHtml;
@@ -483,24 +480,31 @@ public:
 
     std::string removeAllAttributes(const std::string &html, const std::string &tag)
     {
-        std::string removedHtml = html;
+        std::string result;
+        result.reserve(html.length());
+
         std::string openingTag = "<" + tag;
-        std::string closingTag = "</" + tag + ">";
+        size_t pos = 0;
+        size_t lastPos = 0;
 
-        size_t pos = removedHtml.find(openingTag);
-        while (pos != std::string::npos)
+        while ((pos = html.find(openingTag, pos)) != std::string::npos)
         {
-            size_t endPos = removedHtml.find(">", pos + openingTag.length());
+            result.append(html, lastPos, pos - lastPos);
+            size_t endPos = html.find(">", pos + openingTag.length());
             if (endPos == std::string::npos)
+            {
                 break;
+            }
 
-            removedHtml.erase(pos + openingTag.length(), endPos - pos - openingTag.length());
-
-            pos = removedHtml.find(openingTag, pos);
+            result.append(openingTag + ">");
+            pos = endPos + 1;
+            lastPos = pos;
         }
 
-        return removedHtml;
+        result.append(html, lastPos, html.length() - lastPos);
+        return result;
     }
+
     std::string normalizeHTML(const std::string &html)
     {
         std::regex spacePattern("[ \t]+");
@@ -516,7 +520,7 @@ public:
         return normalizedHTML;
     }
 
-    std::vector<std::string> extractURLs(const std::string &html)
+    std::vector<std::string> extractURLs(const std::string &html, const std::string &baseURL = "")
     {
         std::vector<std::string> urls;
         std::regex urlPattern("<a\\s+[^>]*href=\"([^\"]*)\"[^>]*>.*?<\\/a>");
@@ -527,33 +531,73 @@ public:
         for (std::sregex_iterator i = urlIterator; i != urlEnd; ++i)
         {
             std::smatch match = *i;
-            urls.push_back(match.str(1));
+            std::string url = match.str(1);
+
+            if (!url.empty() && isalpha(url[0]))
+            {
+                if (url[0] == '/')
+                    url = baseURL + url;
+                else if (url.find("://") == std::string::npos)
+                    url = "http://" + url;
+
+                if (std::find(urls.begin(), urls.end(), url) == urls.end())
+                {
+                    urls.push_back(url);
+                }
+            }
         }
 
         return urls;
     }
-    std::string encodeHtmlEntities(const std::string &input)
+
+    std::string extractScriptSection(const std::string &html)
     {
-        static const std::unordered_map<char, std::string> specialCharacters = {
-            {'"', "&quot;"}, {'<', "&lt;"}, {'>', "&gt;"}, {'&', "&amp;"}, {'\'', "&apos;"}};
+        std::regex script_regex("<script[^>]*>([\\s\\S]*?)</script>", std::regex_constants::icase);
+        std::smatch match;
+        std::string result;
 
-        std::string encodedString;
-        encodedString.reserve(input.size());
-
-        for (const char &c : input)
+        for (std::sregex_iterator it = std::sregex_iterator(html.begin(), html.end(), script_regex);
+             it != std::sregex_iterator(); ++it)
         {
-            if (specialCharacters.find(c) != specialCharacters.end())
-            {
-                encodedString += specialCharacters.at(c);
-            }
-            else
-            {
-                encodedString += c;
-            }
+            std::smatch match = *it;
+            result += match[1].str() + "\n";
         }
 
-        return encodedString;
+        return result;
     }
+
+    std::string extractStyleSection(const std::string &html)
+    {
+        std::regex style_regex("<style[^>]*>([\\s\\S]*?)</style>", std::regex_constants::icase);
+        std::smatch match;
+        std::string result;
+
+        for (std::sregex_iterator it = std::sregex_iterator(html.begin(), html.end(), style_regex);
+             it != std::sregex_iterator(); ++it)
+        {
+            std::smatch match = *it;
+            result += match[1].str() + "\n";
+        }
+
+        return result;
+    }
+
+    std::vector<std::string> extractFunctionNames(const std::string &scriptSection)
+    {
+        std::regex func_regex(R"(\bfunction\s+(\w+)\s*\()", std::regex_constants::icase);
+        std::smatch match;
+        std::vector<std::string> functionNames;
+
+        for (std::sregex_iterator it = std::sregex_iterator(scriptSection.begin(), scriptSection.end(), func_regex);
+             it != std::sregex_iterator(); ++it)
+        {
+            std::smatch match = *it;
+            functionNames.push_back(match[1].str());
+        }
+
+        return functionNames;
+    }
+
     std::string removeHtmlComments(const std::string &input)
     {
         static const std::regex commentPattern("<!--(.*?)-->");
@@ -568,33 +612,39 @@ public:
 
         while (std::getline(iss, line))
         {
-            line = std::regex_replace(line, std::regex("^\\s+"), "");
+            std::string trimmedLine = std::regex_replace(line, std::regex("^\\s+"), "");
 
-            if (line.empty())
+            if (trimmedLine.empty())
                 continue;
 
-            if (line.find("</") != std::string::npos)
+            if (trimmedLine.find("</") != std::string::npos)
                 indentLevel--;
 
-            indentedCode += std::string(indentLevel * spacesPerLevel, ' ') + line + "\n";
+            if (indentLevel < 0)
+                indentLevel = 0;
 
-            if (line.find("<") != std::string::npos && line.find("</") == std::string::npos && line.find("/>") == std::string::npos)
+            indentedCode += std::string(indentLevel * spacesPerLevel, ' ') + trimmedLine + "\n";
+
+            if (trimmedLine.find("<") != std::string::npos &&
+                trimmedLine.find("</") == std::string::npos &&
+                trimmedLine.find("/>") == std::string::npos)
                 indentLevel++;
         }
 
         return indentedCode;
     }
+
     std::vector<std::string> extractInlineCss(const std::string &input)
     {
         std::vector<std::string> inlineCss;
-        std::regex cssPattern("style=\"(.*?)\"");
+        std::regex cssPattern(R"(style=\"(.*?)\")");
         std::sregex_iterator cssIterator(input.begin(), input.end(), cssPattern);
         std::sregex_iterator cssEnd;
 
-        for (std::sregex_iterator i = cssIterator; i != cssEnd; ++i)
+        for (; cssIterator != cssEnd; ++cssIterator)
         {
-            std::smatch match = *i;
-            inlineCss.push_back(match.str(1));
+            std::smatch match = *cssIterator;
+            inlineCss.push_back(match[1].str());
         }
 
         return inlineCss;
@@ -608,19 +658,18 @@ public:
     std::vector<std::string> getTagContents(const std::string &html, const std::string &tag)
     {
         std::vector<std::string> tagContents;
-        std::regex tagPattern("<" + tag + "[^>]*>(.*?)</" + tag + ">");
+        std::regex tagPattern("<" + tag + "[^>]*>(.*?)</" + tag + ">", std::regex_constants::ECMAScript);
         std::sregex_iterator tagIterator(html.begin(), html.end(), tagPattern);
         std::sregex_iterator tagEnd;
 
         for (std::sregex_iterator i = tagIterator; i != tagEnd; ++i)
         {
             std::smatch match = *i;
-            tagContents.push_back(match.str(1));
+            tagContents.push_back(match[1]);
         }
 
         return tagContents;
     }
-
     bool isNormalizedHTML(const std::string &html)
     {
         std::regex spacePattern("[ \t]+");
@@ -635,16 +684,7 @@ public:
 
         return normalizedHTML == html;
     }
-    std::string textToHtml(const std::string &text)
-    {
-        std::string html = text;
-        html = std::regex_replace(html, std::regex("&"), "&amp;");
-        html = std::regex_replace(html, std::regex("\""), "&quot;");
-        html = std::regex_replace(html, std::regex("'"), "&apos;");
-        html = std::regex_replace(html, std::regex("<"), "&lt;");
-        html = std::regex_replace(html, std::regex(">"), "&gt;");
-        return html;
-    }
+
     bool hasNestedTags(const std::string &html, const std::string &tag)
     {
         std::regex tagPattern("<" + tag + "[^>]*>.*</" + tag + ">");
@@ -680,28 +720,37 @@ public:
 
     std::string removeAttributeFromTag(const std::string &html, const std::string &tag, const std::string &attribute)
     {
-        std::regex tagPattern("<" + tag + "[^>]*>");
-        std::regex attributePattern(attribute + "\\s*=\\s*\"([^\"]*)\"");
-
         std::string modifiedHTML = html;
+        std::regex tagPattern("<" + tag + "\\b[^>]*>", std::regex_constants::ECMAScript);
+        std::regex attributePattern(attribute + "\\s*=\\s*\"([^\"]*)\"", std::regex_constants::ECMAScript);
+        std::sregex_iterator tagIterator(modifiedHTML.begin(), modifiedHTML.end(), tagPattern);
+        std::sregex_iterator tagEnd;
         std::smatch match;
 
-        while (std::regex_search(modifiedHTML, match, tagPattern))
+        std::string result;
+
+        size_t lastPos = 0;
+        for (std::sregex_iterator i = tagIterator; i != tagEnd; ++i)
         {
+            match = *i;
             std::string openingTag = match.str();
-            if (std::regex_search(openingTag, match, attributePattern))
+            result.append(modifiedHTML, lastPos, match.position() - lastPos);
+            std::smatch attrMatch;
+            if (std::regex_search(openingTag, attrMatch, attributePattern))
             {
-
-                std::string attributeValue = match.str(1);
+                std::string attributeValue = attrMatch[1].str();
                 std::string attributeToRemove = attribute + "=\"" + attributeValue + "\"";
-                modifiedHTML = std::regex_replace(modifiedHTML, std::regex(attributeToRemove), "");
+                openingTag = std::regex_replace(openingTag, std::regex(attributeToRemove), "");
             }
-
-            modifiedHTML = match.suffix().str();
+            result += openingTag;
+            lastPos = match.position() + match.length();
         }
 
-        return modifiedHTML;
+        result += modifiedHTML.substr(lastPos);
+
+        return result;
     }
+
     std::string replaceTagContent(const std::string &html, const std::string &tag, const std::string &newContent)
     {
         std::regex tagPattern("<" + tag + "[^>]*>(.*?)</" + tag + ">");
@@ -912,11 +961,24 @@ public:
         return imgSrcs;
     }
 
-    std::string removeAllComments(const std::string &html)
+    std::string removeAllCommentsFromHTML(const std::string &html)
     {
-        std::regex commentPattern("<!--(.*?)-->");
-        return std::regex_replace(html, commentPattern, "");
+        std::regex multiLineCommentPattern("<!--([\\s\\S]*?)-->");
+        return std::regex_replace(html, multiLineCommentPattern, "");
     }
+
+    std::string removeAllCommentsFromJS(const std::string &js)
+    {
+        std::regex multiAndSingleLineCommentPattern("/\\*([\\s\\S]*?)\\*/|//.*");
+        return std::regex_replace(js, multiAndSingleLineCommentPattern, "");
+    }
+
+    std::string removeAllCommentsFromCSS(const std::string &css)
+    {
+        std::regex multiAndSingleLineCommentPattern("/\\*([\\s\\S]*?)\\*/");
+        return std::regex_replace(css, multiAndSingleLineCommentPattern, "");
+    }
+
     std::string removeAllMetaTags(const std::string &html)
     {
         std::regex metaTagPattern("<meta[^>]*>");
