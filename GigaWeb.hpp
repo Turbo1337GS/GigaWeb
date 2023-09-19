@@ -1,4 +1,4 @@
-
+#include <cstring>
 #include <unordered_set>
 #include <iostream>
 #include <stdio.h>
@@ -12,7 +12,8 @@
 #include <map>
 #include <string_view>
 #include "knownEntities.hpp"
-
+#include <utility>
+#include <gumbo.h>
 class GigaWeb
 {
 private:
@@ -22,9 +23,75 @@ private:
         return size * nmemb;
     }
 
+    void extract_main_content(GumboNode *node, size_t &max_words, std::string &content)
+    {
+        if (node->type == GUMBO_NODE_TEXT)
+        {
+            std::string text(node->v.text.text);
+            size_t word_count = std::count(text.begin(), text.end(), ' ') + 1;
+
+            if (word_count > max_words)
+            {
+                max_words = word_count;
+                content = text;
+            }
+        }
+        else if (node->type == GUMBO_NODE_ELEMENT && node->v.element.tag != GUMBO_TAG_SCRIPT &&
+                 node->v.element.tag != GUMBO_TAG_STYLE)
+        {
+            GumboVector *children = &node->v.element.children;
+
+            for (unsigned int i = 0; i < children->length; ++i)
+            {
+                extract_main_content(static_cast<GumboNode *>(children->data[i]), max_words, content);
+            }
+        }
+    }
+
+    void extract_multiple_contents(GumboNode *node, std::vector<std::string> &contents)
+    {
+        if (node->type == GUMBO_NODE_TEXT)
+        {
+            std::string text(node->v.text.text);
+            size_t word_count = std::count(text.begin(), text.end(), ' ') + 1;
+
+            if (word_count > 20)
+            {
+                contents.push_back(text);
+            }
+        }
+        else if (node->type == GUMBO_NODE_ELEMENT &&
+                 node->v.element.tag != GUMBO_TAG_SCRIPT &&
+                 node->v.element.tag != GUMBO_TAG_STYLE &&
+                 node->v.element.tag != GUMBO_TAG_HEADER &&
+                 node->v.element.tag != GUMBO_TAG_FOOTER &&
+                 node->v.element.tag != GUMBO_TAG_NAV &&
+                 node->v.element.tag != GUMBO_TAG_ASIDE)
+        {
+            GumboVector *children = &node->v.element.children;
+
+            for (unsigned int i = 0; i < children->length; ++i)
+            {
+                extract_multiple_contents(static_cast<GumboNode *>(children->data[i]), contents);
+            }
+        }
+    }
+
 public:
+    bool isValidURL(const std::string &url)
+    {
+        std::regex urlPattern(R"(^(https?|ftp)://[^\s/$.?#].[^\s]*$)");
+        return std::regex_match(url, urlPattern);
+    }
+
     bool fetchWebContent(const std::string &url, std::string &content)
     {
+        if (!isValidURL(url))
+        {
+            printf("\nError Bad URL: %s\n", url.c_str());
+            return false;
+        }
+        printf("\n%s\n",url.c_str());
         CURL *curl;
         CURLcode res;
         long httpCode = 0;
@@ -41,6 +108,7 @@ public:
             curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
             curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
             curl_easy_setopt(curl, CURLOPT_WRITEDATA, &content);
+            curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
 
             res = curl_easy_perform(curl);
 
@@ -55,7 +123,9 @@ public:
 
             curl_slist_free_all(headers);
 
-            if (httpCode == 200 && contentType && std::string(contentType).find("text/html") != std::string::npos)
+            if (httpCode == 200 && contentType &&
+                (std::string(contentType).find("text/html") != std::string::npos ||
+                 std::string(contentType).find("application/json") != std::string::npos))
             {
                 curl_easy_cleanup(curl);
                 curl_global_cleanup();
@@ -63,9 +133,9 @@ public:
             }
             else
             {
-                std::cerr << "Invalid HTTP status code or content type.\n";
-                std::cerr << "HTTP Status Code: " << httpCode << "\n";
-                std::cerr << "Content Type: " << (contentType ? contentType : "Unknown") << "\n";
+                // std::cerr << "Invalid HTTP status code or content type.\n";
+                // std::cerr << "HTTP Status Code: " << httpCode << "\n";
+                // std::cerr << "Content Type: " << (contentType ? contentType : "Unknown") << "\n";
                 return false;
             }
         }
@@ -98,9 +168,7 @@ public:
     std::string removeScriptAndStyleTags(const std::string &html)
     {
         if (html.empty())
-        {
             return "";
-        }
 
         static const std::string scriptStart = "<script";
         static const std::string scriptEnd = "</script>";
@@ -108,53 +176,55 @@ public:
         static const std::string styleEnd = "</style>";
 
         std::string result;
-        std::size_t pos = 0;
-        std::size_t lastPos = 0;
+        result.reserve(html.size());
 
-        while (pos < html.size())
+        const char *p = html.data();
+        const char *end = p + html.size();
+        const char *lastValid = p;
+
+        while (p < end)
         {
-            std::size_t scriptPos = html.find(scriptStart, pos);
-            std::size_t stylePos = html.find(styleStart, pos);
+            const char *nextScript = std::strstr(p, scriptStart.c_str());
+            const char *nextStyle = std::strstr(p, styleStart.c_str());
 
-            if (scriptPos != std::string::npos && (stylePos == std::string::npos || scriptPos < stylePos))
+            if (nextScript && (!nextStyle || nextScript < nextStyle))
             {
-                result += html.substr(lastPos, scriptPos - lastPos);
-                pos = html.find(scriptEnd, scriptPos);
-                if (pos != std::string::npos)
+                result.append(lastValid, nextScript);
+                p = std::strstr(nextScript, scriptEnd.c_str());
+                if (p)
                 {
-                    pos += scriptEnd.length();
+                    p += scriptEnd.size();
                 }
                 else
                 {
-                    result += html.substr(scriptPos);
                     break;
                 }
             }
-            else if (stylePos != std::string::npos)
+            else if (nextStyle)
             {
-                result += html.substr(lastPos, stylePos - lastPos);
-                pos = html.find(styleEnd, stylePos);
-                if (pos != std::string::npos)
+                result.append(lastValid, nextStyle);
+                p = std::strstr(nextStyle, styleEnd.c_str());
+                if (p)
                 {
-                    pos += styleEnd.length();
+                    p += styleEnd.size();
                 }
                 else
                 {
-                    result += html.substr(stylePos);
                     break;
                 }
             }
             else
             {
-                result += html.substr(lastPos);
+                result.append(lastValid, end);
                 break;
             }
 
-            lastPos = pos;
+            lastValid = p;
         }
 
         return result;
     }
+
     std::string removePathAndSvgTags(const std::string &html)
     {
         if (html.empty())
@@ -520,35 +590,50 @@ public:
         return normalizedHTML;
     }
 
-    std::vector<std::string> extractURLs(const std::string &html, const std::string &baseURL = "")
-    {
-        std::vector<std::string> urls;
-        std::regex urlPattern("<a\\s+[^>]*href=\"([^\"]*)\"[^>]*>.*?<\\/a>");
 
-        std::sregex_iterator urlIterator(html.begin(), html.end(), urlPattern);
-        std::sregex_iterator urlEnd;
+std::vector<std::string> extractURLs(const std::string &html, const std::string &baseURL = "") {
+    std::vector<std::string> urls;
+    std::unordered_set<std::string> uniqueUrls;
 
-        for (std::sregex_iterator i = urlIterator; i != urlEnd; ++i)
-        {
-            std::smatch match = *i;
-            std::string url = match.str(1);
+    std::string::size_type pos = 0;
+    std::string::size_type end = 0;
 
-            if (!url.empty() && isalpha(url[0]))
-            {
-                if (url[0] == '/')
-                    url = baseURL + url;
-                else if (url.find("://") == std::string::npos)
-                    url = "http://" + url;
+    while ((pos = html.find("<a ", pos)) != std::string::npos) {
+        end = html.find('>', pos);
+        if (end == std::string::npos) break;
 
-                if (std::find(urls.begin(), urls.end(), url) == urls.end())
-                {
-                    urls.push_back(url);
-                }
-            }
+        std::string::size_type startQuote = html.find("href=\"", pos);
+        if (startQuote == std::string::npos || startQuote > end) {
+            pos = end + 1;
+            continue;
+        }
+        startQuote += 6;  // Length of "href=\""
+
+        std::string::size_type endQuote = html.find('\"', startQuote);
+        if (endQuote == std::string::npos || endQuote > end) {
+            pos = end + 1;
+            continue;
         }
 
-        return urls;
+        std::string url = html.substr(startQuote, endQuote - startQuote);
+
+        if (!url.empty() && isalpha(url[0])) {
+            if (url[0] == '/')
+                url = baseURL + url;
+            else if (url.find("://") == std::string::npos)
+                url = "http://" + url;
+
+            if (uniqueUrls.find(url) == uniqueUrls.end()) {
+                uniqueUrls.insert(url);
+                urls.push_back(url);
+            }
+        }
+        pos = end + 1;
     }
+
+    return urls;
+}
+
 
     std::string extractScriptSection(const std::string &html)
     {
@@ -1030,6 +1115,62 @@ public:
     {
         std::regex classPattern(" class=\"[^\"]*\"");
         return std::regex_replace(html, classPattern, "");
+    }
+
+    std::string getMainContent(const std::string &html)
+    {
+        GumboOutput *output = gumbo_parse(html.c_str());
+
+        size_t max_words = 0;
+        std::string content;
+        extract_main_content(output->root, max_words, content);
+
+        gumbo_destroy_output(&kGumboDefaultOptions, output);
+
+        return content;
+    }
+    std::vector<std::string> getMultipleContents(const std::string &html)
+    {
+        GumboOutput *output = gumbo_parse(html.c_str());
+
+        std::vector<std::string> contents;
+        std::unordered_set<std::string> unique_contents;
+
+        extract_multiple_contents(output->root, contents);
+
+        gumbo_destroy_output(&kGumboDefaultOptions, output);
+
+        std::vector<std::string> unique_vector;
+        for (const auto &str : contents)
+        {
+            if (unique_contents.find(str) == unique_contents.end())
+            {
+                unique_vector.push_back(str);
+                unique_contents.insert(str);
+            }
+        }
+
+        return unique_vector;
+    }
+    std::string extractDomainFromURL(const std::string &url)
+    {
+        std::string domain;
+
+        auto start = url.find("://");
+        if (start == std::string::npos)
+        {
+            return domain;
+        }
+        start += 3;
+
+        auto end = url.find('/', start);
+        if (end == std::string::npos)
+        {
+            end = url.length();
+        }
+
+        domain = url.substr(start, end - start);
+        return domain;
     }
 };
 extern GigaWeb *giga;
